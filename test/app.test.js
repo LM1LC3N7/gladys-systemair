@@ -1570,3 +1570,97 @@ test('r1 m5 (M23): the manual mode never leaves without the echo of the level of
   assert.ok(stops(ctx.unit) >= 1);
   assert.ok(!ctx.unit.writes().some((w) => w.register === 1162), 'never 1162 = 2');
 });
+
+// --- Review r2 ---------------------------------------------------------------
+
+test('r2 I1b: the sticky window ends by the time; a panel start after it is never fought', async (t) => {
+  const ctx = await setup(t, { config: ALLOW });
+  ctx.unit.halt();
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('start');
+  ctx.unit.ignoreWrites = false;
+  const pressed = Date.now();
+  assert.equal((await ctx.press('stop')).success, true);
+  assert.equal(ctx.app.stopGuard.sticky, true);
+  // Reads inside the window see it stopped; started on the panel just after the 90 s.
+  while (Date.now() - pressed < 93 * SECOND) await ctx.advance(500, 100);
+  ctx.unit.run();
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(stops(ctx.unit), 1, 'never sent again over the panel start');
+  assert.equal(ctx.app.stopGuard, undefined, 'started elsewhere: lifted');
+});
+
+test('r2 I1b: a sticky stop restored from /data is no longer sticky', async (t) => {
+  const store = memoryStore({
+    lastAttemptAt: NOW - 2 * MINUTE,
+    target: { unit: UNIT, host: HOST, port: 502, unitId: UNIT_ID },
+    stopGuard: {
+      unit: UNIT,
+      host: HOST,
+      port: 502,
+      unitId: UNIT_ID,
+      pending: false,
+      seenOff: true,
+      sticky: true,
+    },
+  });
+  const ctx = await setup(t, { store, boot: true });
+  assert.equal(ctx.app.stopGuard.sticky, false);
+  await nextPoll(ctx);
+  assert.deepEqual(ctx.unit.writes(), [], 'the running unit is not stopped again');
+});
+
+test('r2 m6 (M27): a stop pressed between the checks of a mode and its write cancels it', async (t) => {
+  const store = memoryStore();
+  const ctx = await setup(t, { config: ALLOW, store });
+  const save = store.save.bind(store);
+  // /data slow: the stop takes the line only ~120 ms after its press.
+  store.save = (data) => new Promise((resolve) => setTimeout(() => resolve(save(data)), 120));
+  let stop;
+  const push = ctx.unit.log.push.bind(ctx.unit.log);
+  ctx.unit.log.push = (entry) => {
+    // The last fresh read of the mode: the stop is pressed while it is answered.
+    if (!stop && entry.fc === 3 && entry.register === 1401 && ctx.app.inFlight) {
+      stop = ctx.fire('stop');
+    }
+    return push(entry);
+  };
+  const command = ctx.fire('mode', 'away');
+  await ctx.advance(5000, 5);
+  assert.ok(stop, 'the stop was pressed in the gap');
+  const [a, b] = await Promise.all([command, stop]);
+  assert.match(String(a.error), /arrêtée entre-temps/);
+  assert.equal(b.success, true, String(b.error));
+  assert.deepEqual(ctx.unit.writes(), STOP, 'the mode never left');
+});
+
+test('r2 m6 (N07): level off applied, manual mode refused: kept, sent again, said so', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.exceptions.add('6:1162');
+  ctx.unit.exceptionCode = 3;
+  const ack = await ctx.press('stop');
+  assert.match(String(ack.error), /mode manuel a été refusé/);
+  assert.doesNotMatch(String(ack.error), /Allow manual fan stop/);
+  assert.ok(ctx.app.stopGuard, 'kept');
+  assert.equal(ctx.app.stopRefused, undefined);
+  ctx.unit.exceptions.clear();
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(ctx.unit.regs.get(1351), 0, 'sent again and applied');
+});
+
+test('r2 I1b: /data never brings back a sticky flag (checked before any read)', async () => {
+  const store = memoryStore({
+    stopGuard: { unit: UNIT, host: HOST, port: 502, unitId: UNIT_ID, pending: true, sticky: true },
+  });
+  const app = new SystemairApp({
+    gladys: createFakeGladys({ config: CFG }),
+    logger: { debug() {}, info() {}, warn() {}, error() {} },
+    connect: () => {
+      throw new Error('no network here');
+    },
+    store,
+  });
+  await app.loadMemory();
+  assert.equal(app.stopGuard.pending, true);
+  assert.equal(app.stopGuard.sticky, false);
+});

@@ -225,6 +225,8 @@ export class SystemairApp {
       this.stopGuard = {
         ...loaded.stopGuard,
         sentAt: this.mono(),
+        // The window of a start that could land ended with the run that wrote it.
+        sticky: false,
         stickyUntil: this.mono(),
         restored: true,
       };
@@ -1909,12 +1911,12 @@ export class SystemairApp {
       this.liftStopGuard('start pressed after the stop');
       return;
     }
+    if (stop.sticky && this.mono() >= stop.stickyUntil) {
+      // The window of the start that could land is over, whatever this read shows.
+      stop.sticky = false;
+      this.persistStopGuard().catch(() => {});
+    }
     if (values.power === false) {
-      if (stop.sticky && this.mono() >= stop.stickyUntil) {
-        // Seen applied after the window of the start that could land: no longer sticky.
-        stop.sticky = false;
-        this.persistStopGuard().catch(() => {});
-      }
       if (!stop.seenOff || stop.onReads !== 0 || stop.pending) {
         stop.seenOff = true;
         stop.pending = false;
@@ -1937,7 +1939,7 @@ export class SystemairApp {
         return;
       }
       this.persistStopGuard().catch(() => {});
-      if (!stop.sticky) {
+      if (!(stop.sticky && this.mono() < stop.stickyUntil)) {
         return;
       }
     }

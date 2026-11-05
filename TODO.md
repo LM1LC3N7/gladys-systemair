@@ -31,6 +31,11 @@ up to date at the end of every milestone.
       address is forgotten (m2); stop answers and guide (m3); commands and
       stops paced on SAVE Connect (m4); tests for M23 and M25 (m5). Tests
       `r1 …` in `test/app.test.js`.
+- [x] **Review r2 fixes** (2026-11-05): the resend of a sticky stop is decided
+      on its 90 s window (`sticky && mono < stickyUntil`), which ends by the
+      time whatever the read shows; /data never brings `sticky` back (I1b);
+      tests for the protectSeq check before a mode write (M27) and for the
+      level applied / manual mode refused branch (N07). Tests `r2 …`.
 - [ ] **Milestone 2 — real unit**: run against a real SAVE unit, through an
       EW11 and through SAVE Connect (see "To check").
 - [ ] **Milestone 3 — more**: accessory sensors (room, CO2, RH on UI1-UI5:
