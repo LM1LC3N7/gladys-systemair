@@ -1,67 +1,191 @@
-# Template de démonstration
+# Systemair SAVE pour Gladys
 
-Ceci est la documentation utilisateur de l'intégration. Gladys ré-héberge ce
-fichier et affiche un lien **Documentation** permanent vers lui dans l'écran
-de configuration (dans la langue de l'utilisateur, avec l'anglais en repli) —
-c'est au moment de configurer que l'utilisateur en a le plus besoin. Gardez
-les courtes indications d'accueil dans les blocs `section` du `config_schema`
-du manifest ; mettez ici le pas-à-pas détaillé (captures d'écran, dépannage…).
+Affiche une ventilation double flux **Systemair SAVE** (VTR, VSR, VSC à
+régulation SAVE, panneau SAVE Touch ou SAVE Light) dans Gladys, en **Modbus
+TCP** sur votre réseau local, sans cloud ni compte. Intégration non
+officielle, **sans lien avec Systemair**. **Jamais testé avec un vrai
+appareil** : elle lit et écrit les registres de la « Modbus Variable List »
+de Systemair (révision 36, logiciel de carte mère 2.0) comme les utilise
+l’intégration libre home-assistant-systemair-modbus (Home Assistant) ;
+merci de signaler ce que vous observez.
+
+## Avant de commencer
+
+La régulation SAVE parle Modbus RTU sur sa carte de raccordement (RS485).
+Gladys la joint sur votre réseau par l’un de ces moyens :
+
+- **Systemair SAVE Connect** (le module d’accès Internet, art. 211243) :
+  choisissez « Systemair SAVE Connect » comme passerelle. La liste de
+  Systemair indique que tous les registres sont des registres de maintien en
+  Modbus TCP : tout est lu en fonction 3, deux registres par requête, avec
+  une pause entre les requêtes.
+- **Une passerelle RS485 vers Modbus TCP** (Elfin EW11 et semblables),
+  câblée sur les bornes Modbus de la centrale : choisissez « Passerelle
+  RS485 ». Les registres d’entrée sont lus en fonction 4 ; si la passerelle
+  répond « fonction illégale », la fonction 3 est utilisée ensuite (le
+  statut le signale).
+
+Ensuite :
+
+- Donnez une adresse IP fixe à la passerelle dans votre routeur ; le Modbus
+  TCP est sur le port 502 sauf si vous en ajoutez un autre
+  (`192.168.1.50:8899`).
+- Le Modbus TCP n’a **pas de mot de passe** : gardez la passerelle sur un
+  réseau de confiance.
+- L’identifiant d’unité Modbus est l’adresse Modbus de la centrale
+  (Service, Communication, Modbus sur son panneau), 1 par défaut. Une
+  réponse portant un autre identifiant est acceptée.
+- **« Arrêter la ventilation » demande le réglage « Allow manual fan
+  stop »** (registre 1353) sur la centrale : sans lui, la centrale refuse
+  l’arrêt et Gladys le dit (le statut l’affiche aussi).
+
+## Installation
+
+1. Installez l’intégration depuis le store de Gladys.
+2. Saisissez l’**adresse IP de la passerelle**, choisissez son type ;
+   enregistrez.
+3. Ouvrez l’onglet **Découverte** et ajoutez la centrale.
 
 ## Ce que vous obtenez
 
-Six appareils de démonstration apparaissent après l'installation : une
-station météo (vraies données Open-Meteo), un interrupteur, une lampe
-variable, une prise connectée avec mesure de puissance, un détecteur de
-mouvement et une caméra.
+Un appareil, **Ventilation Systemair**, avec :
 
-## Configuration
+| Fonctionnalité                                        | Remarques                                                                                                                                                   |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Températures de l’air soufflé, extrait et extérieur   | °C (les sondes standard de la centrale)                                                                                                                     |
+| Consigne de soufflage                                 | °C, en lecture seule                                                                                                                                        |
+| Humidité de l’air extrait                             | % (la sonde standard de la centrale)                                                                                                                        |
+| Sorties des ventilateurs de soufflage et d’extraction | %, en lecture seule                                                                                                                                         |
+| Changement du filtre dans                             | jours ; non publié quand la centrale lit 0                                                                                                                  |
+| Mode de ventilation                                   | liste : auto, manuel faible / normal / élevé, affluence, rafraîchissement, cheminée, absence, vacances                                                      |
+| Mode en cours                                         | texte : `auto`, `manual`, `stopped`, `crowded`, `refresh`, `fireplace`, `away`, `holiday`, `cooker-hood`, `vacuum-cleaner`, `cdi1`-`cdi3`, `pressure-guard` |
+| Ventilation en marche, ventilateurs en marche         | lecture seule, 1 = oui (« en marche » vaut 0 seulement en mode manuel au niveau arrêt)                                                                      |
+| Alarme de type A, B, C                                | lecture seule, 1 = active                                                                                                                                   |
+| Arrêt manuel autorisé                                 | lecture seule, le réglage de la centrale                                                                                                                    |
+| Démarrer la ventilation (auto) / Arrêter              | boutons                                                                                                                                                     |
 
-1. Ouvrez l'onglet **Configuration** de l'intégration.
-2. Renseignez la **latitude** et la **longitude** que la station météo de
-   démonstration doit observer (Paris par défaut), et choisissez votre unité
-   de température. L'**intervalle de rafraîchissement** règle la fréquence
-   de lecture de la station météo et de la puissance de la prise : toutes
-   les 5 minutes par défaut, toutes les minutes au plus.
-3. Enregistrez : les appareils apparaissent dans l'onglet **Découverte**,
-   prêts à être ajoutés.
+Une valeur hors des plages de la liste (sonde absente, -40 à 80 °C, 0 à
+100 %) n’est jamais publiée : Gladys garde la dernière valeur connue. Les
+vitesses des ventilateurs en tr/min et les débits d’air ne sont pas publiés
+(pas d’unité correspondante dans Gladys). Les sondes accessoires (pièce,
+régulateur supplémentaire, CO2) ne sont pas encore lues.
 
-Le réglage **Préférer la connexion locale** pilote la prise de
-démonstration : elle affiche en badge le canal réellement utilisé (local ou
-cloud), avec un point orange quand elle fonctionne en mode dégradé (local
-refusé, bascule cloud).
+La centrale est lue toutes les 60 s (30 s à 1 h), en une douzaine de petites
+requêtes sur une connexion, avec une pause entre elles (le panneau tactile
+partage le bus), fermée ensuite. Le bouton de test, une recherche dans
+Découverte, une reconnexion de Gladys ou un redémarrage de l’intégration ne
+la lisent jamais avant l’intervalle. Lectures hors intervalle :
 
-## Actions
+- chaque commande relit la centrale juste avant d’écrire, puis relit le mode
+  et le niveau ;
+- « Arrêter la ventilation » et ses renvois ;
+- 5 s puis 20 s après une commande non confirmée, ou après un arrêt qui suit
+  un démarrage ou un mode non confirmé ;
+- une nouvelle adresse, un nouvel identifiant d’unité ou une autre passerelle
+  enregistrés sont lus aussitôt.
 
-- **Tester le fournisseur météo** — effectue une requête en direct vers
-  Open-Meteo et affiche la température et l'humidité actuelles sous le
-  bouton.
-- **Identifier un appareil** — choisissez un de vos appareils dans la liste
-  et il se signale (la lampe de démonstration « clignote » dans les logs).
+Le mode et le niveau manuel sont lus en premier. Quand un bloc suivant
+échoue (exception Modbus, pas de réponse, connexion fermée, mauvaise
+réponse), les valeurs lues avant sont publiées quand même, et le bloc en
+échec est réessayé une fois par heure.
 
-## Scènes
+## Commandes
 
-L'intégration ajoute ses propres cartes à l'éditeur de scènes (Gladys 5.1
-ou plus récent), dans la catégorie **Intégrations** :
+Le mode et « Démarrer la ventilation » sont refusés tant que **Autoriser
+les commandes** n’est pas activé (désactivé par défaut). Pas
+d’interrupteur : le « éteins tout » d’un assistant vocal n’atteint jamais
+la ventilation.
 
-- **Mouvement détecté** (déclencheur) — lance la scène quand un détecteur
-  de démonstration voit bouger quelque chose. Choisissez éventuellement le
-  détecteur et ce qui a bougé (personne, animal) ; laissés vides, toute
-  détection correspond. Les actions suivantes peuvent lire ce qui a bougé
-  avec `{{triggerEvent.data.target}}`.
-- **Identifier un appareil** (action) — fait se signaler l'appareil choisi.
-  Elle indique si l'appareil a pu se signaler, pour que les actions
-  suivantes puissent en dépendre.
+- **Mode** : auto, affluence, rafraîchissement, cheminée, absence et
+  vacances écrivent la demande de mode (registre 1162, comme le panneau) ;
+  les modes temporisés durent le temps réglé sur la centrale. « Manuel,
+  faible / normal / élevé » écrit le niveau manuel (1131), puis le mode
+  manuel si la centrale n’y est pas encore.
+- **Démarrer la ventilation (auto)** écrit le mode auto. Sur une ventilation
+  déjà en marche, rien n’est écrit.
+- Chaque commande relit la centrale juste avant d’écrire (mode, niveau
+  manuel, réglages des niveaux de ventilation), n’écrit rien quand la valeur
+  est déjà la bonne, et n’est confirmée que si la centrale renvoie l’écho de
+  chaque écriture puis relit la valeur demandée. Une relecture qui montre
+  encore l’état d’avant répond « pas encore appliquée » ; une commande qui a
+  pu atteindre la centrale sans être confirmée répond « envoyée, sans
+  confirmation » : vérifiez la centrale quelques secondes plus tard. Une
+  exception Modbus 1, 2 ou 3 à la première écriture répond « refusée » (non
+  appliquée) ; toute autre répond « envoyée, sans confirmation ». Une
+  commande dont la première écriture ne peut pas partir dans les 3,5 s est
+  refusée et rien n’est envoyé.
+- Refusées aussi : quand les **réglages des niveaux de ventilation** relus
+  diffèrent de ceux appris (voir plus bas), quand **/data** ne peut pas être
+  lu ou écrit.
+- Le **mode** est refusé tant que la ventilation est **arrêtée** (mode
+  manuel, niveau arrêt : un mode la relancerait) et tant qu’un **arrêt
+  envoyé depuis Gladys est gardé** : appuyez d’abord sur « Démarrer la
+  ventilation ».
 
-## Tableau de bord
+### Arrêter la ventilation
 
-Ajoutez le widget **État de la démo** à un tableau de bord : il affiche en
-direct la température de la station météo et la puissance de la prise du
-bureau, la connexion utilisée par la prise (en orange si dégradée) et la
-position observée. Son bouton **Identifier la lampe** fait se signaler la
-lampe de démonstration.
+« Arrêter la ventilation » écrit le niveau manuel arrêt (1131 = 0), puis le
+mode manuel (1162 = 2) : la centrale n’entre jamais en mode manuel à un
+autre niveau. Il ne dépend **pas** de l’option, d’une autre commande (une
+commande pas encore écrite est annulée, et la seconde écriture d’un niveau
+manuel ne part jamais après lui), d’une lecture en cours ou bloquée (elle
+est interrompue), d’une lecture en échec ou d’une attente entre deux essais,
+des réglages des niveaux de ventilation, de /data, ni de la configuration
+pas encore relue depuis Gladys ou devenue invalide (il part alors vers
+l’adresse de l’arrêt gardé, sinon la dernière valide gardée dans /data). Il
+est réessayé pendant 3,5 s après l’appui.
 
-## Dépannage
+Il ne peut échouer que dans ces cas, et la réponse le dit :
 
-L'intégration journalise tout ce qu'elle fait : consultez les logs de
-l'intégration depuis l'interface Gladys (ou `docker logs` sur l'hôte) avec
-`LOG_LEVEL=debug` pour le détail complet.
+- aucune adresse connue (jamais d’adresse valide configurée) : « non
+  envoyée » ;
+- la centrale injoignable pendant 3,5 s : « non envoyé » (ou « pas encore
+  envoyé » tant qu’il essaie) ; l’arrêt est gardé et renvoyé par les
+  lectures suivantes ;
+- la centrale refuse le niveau arrêt (exception 3 : « Allow manual fan
+  stop » est désactivé sur la centrale) : « refusé », et le mode manuel
+  n’est pas envoyé ;
+- une autre exception Modbus 1, 2 ou 3 : « refusée » ;
+- pas de réponse, un mauvais écho, ou la ventilation relue en marche :
+  « envoyée, sans confirmation ».
+
+L’arrêt est ensuite **gardé** (dans /data, avec l’adresse) : il n’est
+jamais levé par le temps, seulement par un appui sur « Démarrer la
+ventilation » (avec l’option), ou quand la ventilation est relue en marche
+**deux fois de suite** après l’avoir vue arrêtée (relancée depuis son
+panneau). Tant qu’il est gardé, une lecture qui trouve la ventilation en
+marche avant de l’avoir vue arrêtée (ou après un démarrage qui pourrait
+encore arriver) renvoie l’arrêt : trois envois au plus, en ne comptant que
+les envois partis (un renvoi qui n’a pas pu joindre la centrale ne compte
+pas). Le statut dit où en est l’arrêt : pas encore confirmé, gardé, ou
+abandonné après trois envois. Un arrêt qui n’a peut-être pas abouti quand
+l’intégration s’est arrêtée est renvoyé à son redémarrage, avant même que la
+configuration soit relue.
+
+## Identité de la centrale
+
+La liste Modbus de Systemair ne donne ni numéro de série ni adresse MAC.
+L’appareil est donc lié à la centrale de la configuration, jamais à son
+adresse IP (une nouvelle adresse garde l’appareil et son historique). Une
+empreinte légère est apprise à la première lecture : les **réglages des
+niveaux de ventilation** (registres 1401 à 1410). S’ils changent, une autre
+centrale répond peut-être à l’adresse (ou les réglages ont été changés au
+panneau) : le mode et le démarrage sont refusés jusqu’à ce que « Tester la
+connexion » accepte les nouveaux réglages (l’arrêt n’en dépend pas). Deux
+centrales aux mêmes réglages ne sont pas distinguées.
+
+## /data
+
+L’intégration garde dans `/data/systemair-state.json` (lisible par elle
+seule) : l’heure de la dernière lecture, l’empreinte, la dernière adresse et
+un arrêt gardé. Chaque lecture ou écriture de ce fichier est bornée (2,5 s
+au plus) ; un fichier illisible (ou qui n’est pas un fichier ordinaire)
+n’est jamais pris pour un fichier vide, et le mode et le démarrage sont
+alors refusés ; l’arrêt l’attend 150 ms au plus avant son premier octet.
+
+## Ce que l’intégration ne fait pas
+
+Elle n’écrit jamais un réglage, l’horloge, le programme hebdomadaire, les
+consignes, un mot de passe ; elle ne réinitialise jamais les alarmes, le
+compteur du filtre ni les réglages d’usine. Seuls les registres 1131
+(valeurs 0, 2, 3, 4) et 1162 (valeurs 1 à 7) sont écrits.

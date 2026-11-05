@@ -28,6 +28,7 @@ on:
 jobs:
   releases:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # create the Releases
     # One run at a time, so two runs never create the same Release.

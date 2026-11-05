@@ -36,6 +36,7 @@ on:
 jobs:
   prepare:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write # commit the version bump and push the tag
     outputs:
