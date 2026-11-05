@@ -304,7 +304,7 @@ export const TIMINGS = {
   stopJoinMin: SECOND,
   /** The stop waits this long at most for /data to keep it before its first byte (never blocking). */
   stopSaveWait: 150,
-  /** A stop not confirmed is reaffirmed by the next reads, three times at most (sends that left). */
+  /** A stop not confirmed is reaffirmed by the next reads, three times at most (sends the unit answered). */
   stopReasserts: 3,
   /** /data: one read or one write of the state file waits this long at most. */
   storeTimeout: 2 * SECOND,

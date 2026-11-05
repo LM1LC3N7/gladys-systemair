@@ -74,7 +74,9 @@ La centrale est lue toutes les 60 s (30 s à 1 h), en une douzaine de petites
 requêtes sur une connexion, avec une pause entre elles (le panneau tactile
 partage le bus), fermée ensuite. Le bouton de test, une recherche dans
 Découverte, une reconnexion de Gladys ou un redémarrage de l’intégration ne
-la lisent jamais avant l’intervalle. Lectures hors intervalle :
+la lisent jamais avant l’intervalle. Les commandes et les arrêts font la même
+pause entre leurs requêtes quand leur échéance le permet. Lectures hors
+intervalle :
 
 - chaque commande relit la centrale juste avant d’écrire, puis relit le mode
   et le niveau ;
@@ -139,28 +141,45 @@ Il ne peut échouer que dans ces cas, et la réponse le dit :
 
 - aucune adresse connue (jamais d’adresse valide configurée) : « non
   envoyée » ;
-- la centrale injoignable pendant 3,5 s : « non envoyé » (ou « pas encore
-  envoyé » tant qu’il essaie) ; l’arrêt est gardé et renvoyé par les
+- la passerelle injoignable pendant 3,5 s : « arrêt non envoyé » (ou « pas
+  encore envoyé » tant qu’il essaie) ; l’arrêt est gardé et renvoyé par les
   lectures suivantes ;
-- la centrale refuse le niveau arrêt (exception 3 : « Allow manual fan
-  stop » est désactivé sur la centrale) : « refusé », et le mode manuel
-  n’est pas envoyé ;
-- une autre exception Modbus 1, 2 ou 3 : « refusée » ;
-- pas de réponse, un mauvais écho, ou la ventilation relue en marche :
-  « envoyée, sans confirmation ».
+- la connexion se ferme, ou aucune réponse ne vient, avant que la centrale
+  réponde : « arrêt remis à la passerelle, sans réponse de la centrale »
+  (il n’est peut-être pas arrivé) ; gardé et renvoyé ;
+- la centrale refuse le niveau arrêt par une exception Modbus 1, 2 ou 3
+  (3 : « Allow manual fan stop » est désactivé sur la centrale) : « refusé » ;
+  le mode manuel n’est pas envoyé, et l’arrêt **n’est pas gardé** (ni en
+  attente ni renvoyé, le mode n’est pas bloqué ; le statut le dit jusqu’à
+  l’appui suivant) ;
+- le niveau arrêt appliqué et le mode manuel refusé (exception 1, 2 ou 3) :
+  dit tel quel ; gardé et renvoyé ;
+- toute autre exception Modbus (4 à 6…), un mauvais écho, ou la ventilation
+  relue en marche : « arrêt envoyé, sans confirmation » ; gardé et renvoyé.
 
 L’arrêt est ensuite **gardé** (dans /data, avec l’adresse) : il n’est
 jamais levé par le temps, seulement par un appui sur « Démarrer la
 ventilation » (avec l’option), ou quand la ventilation est relue en marche
 **deux fois de suite** après l’avoir vue arrêtée (relancée depuis son
 panneau). Tant qu’il est gardé, une lecture qui trouve la ventilation en
-marche avant de l’avoir vue arrêtée (ou après un démarrage qui pourrait
-encore arriver) renvoie l’arrêt : trois envois au plus, en ne comptant que
-les envois partis (un renvoi qui n’a pas pu joindre la centrale ne compte
-pas). Le statut dit où en est l’arrêt : pas encore confirmé, gardé, ou
-abandonné après trois envois. Un arrêt qui n’a peut-être pas abouti quand
-l’intégration s’est arrêtée est renvoyé à son redémarrage, avant même que la
-configuration soit relue.
+marche avant de l’avoir vue arrêtée renvoie l’arrêt : trois envois au plus,
+en ne comptant que les envois **auxquels la centrale a répondu** (l’écho du
+niveau arrêt, ou une exception Modbus) ; un renvoi qui trouve la passerelle
+prise par un autre maître, une connexion fermée ou aucune réponse ne compte
+pas.
+
+Un arrêt pressé alors qu’un démarrage ou un mode peut encore arriver (écrit,
+non confirmé, dans ses 90 s) est « collant » : il est renvoyé même après
+avoir vu la ventilation arrêtée, jusqu’à ce qu’une lecture après ces 90 s le
+voie appliqué. Un nouvel appui n’hérite jamais de cela d’un arrêt plus
+ancien, et un démarrage fait ensuite au panneau n’est jamais combattu.
+
+Le statut dit où en est l’arrêt : pas encore confirmé, gardé, ou abandonné
+après trois envois ayant reçu une réponse. Un arrêt qui n’a peut-être pas
+abouti quand l’intégration s’est arrêtée est renvoyé à son redémarrage,
+avant même que la configuration soit relue. Si l’adresse a changé depuis,
+il part vers la nouvelle adresse (jamais réécrit vers l’ancienne) ; un arrêt
+déjà vu appliqué à l’ancienne adresse est oublié.
 
 ## Identité de la centrale
 

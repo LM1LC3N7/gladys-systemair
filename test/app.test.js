@@ -490,7 +490,15 @@ test('a unit that does not allow the manual stop: refused, the manual mode never
   assert.match(String(ack.error), /Allow manual fan stop/);
   assert.deepEqual(ctx.unit.writes(), [LEVEL_OFF], 'never 1162 = 2 (another level)');
   assert.equal(ctx.unit.regs.get(1161), 0, 'still in auto');
-  assert.ok(ctx.app.stopGuard, 'kept: it left, it counts');
+  // A certain refusal: neither pending nor resent, never blocks the mode, said in the status.
+  assert.equal(ctx.app.stopGuard, undefined);
+  assert.equal(ctx.store.data.stopGuard, null);
+  await nextPoll(ctx);
+  await ctx.advance(3 * MINUTE, 200);
+  assert.deepEqual(ctx.unit.writes(), [LEVEL_OFF], 'never resent');
+  assert.match(ctx.status().message.fr, /refusé par la centrale \(exception 3\)/);
+  await ctx.gladys.fake.configUpdated(ALLOW);
+  assert.equal((await ctx.press('mode', 'away')).success, true, 'the mode follows the option');
 });
 
 test('the stop takes the line from a stuck poll (dropped, nothing of it published)', async (t) => {
@@ -1365,4 +1373,200 @@ test('a resend planned before a start pressed in its second is dropped', async (
   assert.equal(ctx.app.stopGuard, undefined);
   assert.equal(stops(ctx.unit), 1, 'the resend never left');
   assert.equal(ctx.unit.regs.get(1351), 1);
+});
+
+// --- Review r1 ---------------------------------------------------------------
+
+/** Waits (mocked time) until the next resend of the stop is logged. */
+async function untilResend(ctx) {
+  const logged = ctx.logs.filter((l) => /stop sent again/.test(l)).length;
+  for (let i = 0; i < 3000; i += 1) {
+    if (ctx.logs.filter((l) => /stop sent again/.test(l)).length > logged) return;
+    await ctx.advance(50, 50);
+  }
+  assert.fail('no resend');
+}
+
+test('r1 B1: a resend the unit never answered is not counted (gateway taken, no answer)', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('stop');
+  const before = stops(ctx.unit);
+  // Another master holds the gateway: connections accepted then closed at once.
+  for (let i = 0; i < 2; i += 1) {
+    await untilResend(ctx);
+    ctx.unit.dropConnections = 1000;
+    await ctx.advance(5 * SECOND, 100);
+    ctx.unit.dropConnections = 0;
+  }
+  // The write leaves but never gets an answer.
+  for (let i = 0; i < 2; i += 1) {
+    await untilResend(ctx);
+    ctx.unit.silent.add('6:1131');
+    await ctx.advance(5 * SECOND, 100);
+    ctx.unit.silent.clear();
+  }
+  assert.ok(stops(ctx.unit) > before, 'some bytes were handed to the gateway');
+  assert.equal(ctx.app.stopGuard.reasserts, 0, 'none answered, none counted');
+  assert.doesNotMatch(ctx.status().message.fr, /ATTENTION/);
+  // The gateway free again: the stop reaches the unit and is applied.
+  ctx.unit.ignoreWrites = false;
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(ctx.unit.regs.get(1351), 0, 'stopped at last');
+  assert.equal(ctx.app.stopGuard.seenOff, true);
+});
+
+test('r1 B1: a resend refused by an exception counts (the unit answered)', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('stop');
+  ctx.unit.exceptions.add('6:1131');
+  ctx.unit.exceptionCode = 4;
+  await ctx.advance(10 * MINUTE, 200);
+  assert.equal(ctx.app.stopGuard.reasserts, 3);
+});
+
+test('r1 I1: a mode confirmed by a follow-up read never makes a later stop sticky', async (t) => {
+  const ctx = await setup(t, { config: ALLOW });
+  // Away is applied 2 s after its write: "not applied yet", then the 5 s read shows it.
+  ctx.unit.ignoreWrites = true;
+  const ack = await ctx.press('mode', 'away', 2 * SECOND);
+  ctx.unit.ignoreWrites = false;
+  ctx.unit.run(5, 3);
+  assert.match(String((await ack).error), /pas encore appliquée/);
+  await ctx.advance(8 * SECOND, 50);
+  assert.equal(ctx.app.guards.size, 0, 'the follow-up read lifted the guard');
+  assert.equal(ctx.app.startOpen, false);
+  await ctx.advance(14 * SECOND, 100);
+  assert.equal((await ctx.press('stop')).success, true);
+  assert.equal(ctx.app.stopGuard.sticky, false);
+  // Started again on the panel: never stopped again by Gladys.
+  ctx.unit.run();
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(stops(ctx.unit), 1);
+  assert.equal(ctx.app.stopGuard, undefined, 'started elsewhere: lifted');
+});
+
+test('r1 I1: the sticky window ends; a new press never inherits it', async (t) => {
+  const ctx = await setup(t, { config: ALLOW });
+  ctx.unit.halt();
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('start');
+  ctx.unit.ignoreWrites = false;
+  assert.equal((await ctx.press('stop')).success, true);
+  assert.equal(ctx.app.stopGuard.sticky, true);
+  // After its 90 s window, a read sees the stop applied: no longer sticky.
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(ctx.app.stopGuard.sticky, false);
+  ctx.unit.run();
+  await ctx.advance(3 * MINUTE, 200);
+  assert.equal(stops(ctx.unit), 1, 'a start on the panel is never fought');
+  // A new press after a sticky one starts unsticky.
+  ctx.unit.halt();
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('start');
+  ctx.unit.ignoreWrites = false;
+  await ctx.press('stop');
+  ctx.app.guards.clear();
+  ctx.app.startOpen = false;
+  await ctx.press('stop');
+  assert.equal(ctx.app.stopGuard.sticky, false, 'not carried by a press');
+});
+
+test('r1 m5 (M25): a stop pressed while a mode write waits for its echo is sticky', async (t) => {
+  const ctx = await setup(t, { config: ALLOW });
+  ctx.unit.delays['6:1162'] = 800;
+  const mode = ctx.fire('mode', 'away');
+  for (let i = 0; i < 300 && ctx.unit.writes().length === 0; i += 1) await ctx.advance(10, 10);
+  assert.equal(ctx.app.guards.size, 0, 'no guard yet: only the write in flight');
+  const stop = ctx.fire('stop');
+  await ctx.advance(5 * SECOND, 50);
+  await Promise.all([mode, stop]);
+  assert.equal(ctx.app.stopGuard.sticky, true);
+});
+
+test('r1 I2: a start waiting for a frozen /data never holds the stop back', async (t) => {
+  const store = memoryStore();
+  const ctx = await setup(t, { store, config: ALLOW });
+  assert.equal((await ctx.press('stop')).success, true);
+  ctx.unit.run();
+  store.hang = true;
+  const start = ctx.fire('start');
+  await ctx.advance(150, 10);
+  const pressed = Date.now();
+  const before = stops(ctx.unit);
+  const stop = ctx.fire('stop');
+  for (let i = 0; i < 100 && stops(ctx.unit) === before; i += 1) await ctx.advance(10, 10);
+  assert.ok(stops(ctx.unit) > before, 'the stop left');
+  const at = ctx.unit.log.filter((r) => r.fc === 6 && r.register === 1131).at(-1).at;
+  assert.ok(at - pressed < 300, `first byte ${at - pressed} ms after the press`);
+  await ctx.advance(5 * SECOND, 50);
+  assert.equal((await start).success, false);
+  await stop;
+  assert.equal(ctx.unit.maxOpen, 1, 'never two connections');
+  assert.ok(!ctx.unit.writes().some((w) => w.register === 1162 && w.value === 1), 'no start');
+});
+
+test('r1 m2: a pending stop of a previous address goes to the current one at boot', async (t) => {
+  const OLD = '192.168.1.99';
+  const store = memoryStore({
+    lastAttemptAt: NOW - 10 * SECOND,
+    target: { unit: UNIT, host: HOST, port: 502, unitId: UNIT_ID },
+    stopGuard: { unit: `${OLD}#1`, host: OLD, port: 502, unitId: UNIT_ID, pending: true },
+  });
+  const ctx = await setup(t, { store, boot: true, create: false });
+  assert.ok(!ctx.unit.hosts.includes(OLD), 'never written to the old address');
+  assert.deepEqual(ctx.unit.writes(), STOP);
+  assert.equal(store.data.stopGuard.host, HOST);
+  assert.match(ctx.app.status().fr, /arrêt envoyé depuis Gladys/);
+});
+
+test('r1 m2: a new address takes a pending stop with it, forgets a confirmed one', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.ignoreWrites = true;
+  await ctx.press('stop');
+  const updating = ctx.gladys.fake.configUpdated({ host: '192.168.1.81' });
+  await ctx.advance(2000, 50);
+  await updating;
+  assert.equal(ctx.app.stopGuard.host, '192.168.1.81');
+  assert.match(ctx.status().message.fr, /pas encore confirmé/);
+});
+
+test('r1 m3: a stop whose connection closes before any answer says so', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.closeOnWrite = 1000;
+  const ack = await ctx.press('stop');
+  assert.match(String(ack.error), /sans réponse de la centrale/);
+  assert.match(String(ack.error), /gardé/);
+});
+
+test('r1 m4: SAVE Connect: a command and a stop are paced like the reads', async (t) => {
+  const unit = fakeSystemair({ saveConnect: true });
+  const ctx = await setup(t, { unit, config: { ...ALLOW, gateway: 'save-connect' }, first: 5000 });
+  const from = ctx.unit.log.length;
+  assert.equal((await ctx.press('mode', 'manual-high')).success, true);
+  const gaps = ctx.unit.log.slice(from + 1).map((r, i) => r.at - ctx.unit.log[from + i].at);
+  assert.ok(gaps.length >= 8, `${gaps.length} requests`);
+  assert.ok(
+    gaps.every((g) => g >= 100),
+    `gaps ${gaps}`,
+  );
+  const stopFrom = ctx.unit.log.length;
+  assert.equal((await ctx.press('stop')).success, true);
+  const stopGaps = ctx.unit.log
+    .slice(stopFrom + 1)
+    .map((r, i) => r.at - ctx.unit.log[stopFrom + i].at);
+  assert.ok(
+    stopGaps.every((g) => g >= 100),
+    `gaps ${stopGaps}`,
+  );
+});
+
+test('r1 m5 (M23): the manual mode never leaves without the echo of the level off', async (t) => {
+  const ctx = await setup(t);
+  ctx.unit.badEchoOn.add('6:1131');
+  const ack = await ctx.press('stop');
+  assert.equal(ack.success, false);
+  assert.ok(stops(ctx.unit) >= 1);
+  assert.ok(!ctx.unit.writes().some((w) => w.register === 1162), 'never 1162 = 2');
 });

@@ -119,6 +119,11 @@ export const T = {
     ' The unit does not allow a manual stop (setting "Allow manual fan stop"): "Stop the ventilation" will be refused by the unit.',
     ' La centrale n’autorise pas l’arrêt manuel (réglage « Allow manual fan stop ») : « Arrêter la ventilation » sera refusé par la centrale.',
   ),
+  stopRefused: (code) =>
+    both(
+      ` The last stop was refused by the unit (exception ${code}): it is not kept nor sent again; the mode follows the option.`,
+      ` Le dernier arrêt a été refusé par la centrale (exception ${code}) : il n’est ni gardé ni renvoyé ; le mode suit l’option.`,
+    ),
   fallback: both(
     ' The gateway refuses function 4: input registers are read as holding registers.',
     ' La passerelle refuse la fonction 4 : les registres d’entrée sont lus comme registres de maintien.',
@@ -206,9 +211,24 @@ export const ERRORS = {
       `Arrêt non envoyé, la centrale n’a pas pu être jointe (${reason}) : il est gardé et renvoyé quand une lecture montre la ventilation en marche.`,
     ),
   stopNotAllowed: both(
-    'The unit refused the stop: its setting "Allow manual fan stop" is off (change it on the unit). Not applied.',
-    'La centrale a refusé l’arrêt : son réglage « Allow manual fan stop » est désactivé (à changer sur la centrale). Non appliqué.',
+    'The unit refused the stop: its setting "Allow manual fan stop" is off (change it on the unit). Not applied, not kept.',
+    'La centrale a refusé l’arrêt : son réglage « Allow manual fan stop » est désactivé (à changer sur la centrale). Non appliqué, non gardé.',
   ),
+  stopModeRefused: (reason) =>
+    both(
+      `The level off was applied, the manual mode was refused (${reason}): the stop is kept and sent again by the next reads; check the unit.`,
+      `Le niveau arrêt est appliqué, le mode manuel a été refusé (${reason}) : l’arrêt est gardé et renvoyé par les lectures suivantes ; vérifiez la centrale.`,
+    ),
+  stopUnconfirmed: (reason) =>
+    both(
+      `Stop sent, without confirmation (${reason}): it is kept and sent again by the next reads; check the unit in a few seconds.`,
+      `Arrêt envoyé, sans confirmation (${reason}) : il est gardé et renvoyé par les lectures suivantes ; vérifiez la centrale dans quelques secondes.`,
+    ),
+  stopNoAnswer: (reason) =>
+    both(
+      `Stop handed to the gateway, no answer from the unit (${reason}): it may not have arrived; it is kept and sent again by the next reads.`,
+      `Arrêt remis à la passerelle, sans réponse de la centrale (${reason}) : il n’est peut-être pas arrivé ; il est gardé et renvoyé par les lectures suivantes.`,
+    ),
   configChanged: both(
     'The configuration changed meanwhile: not sent.',
     'La configuration a changé entre-temps : non envoyée.',

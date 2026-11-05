@@ -22,6 +22,15 @@ up to date at the end of every milestone.
       "Stop the ventilation" never held back and kept until a start, test
       button, docs en/fr, cover. Tested against a fake unit only (and a real
       TCP server of gladys-testkit at x20).
+- [x] **Review r1 fixes** (2026-11-05): a resend counts only when the unit
+      answered its first write (B1); `startOpen` ends with its command guard,
+      `sticky` lasts the 90 s window and is never carried by a press (I1);
+      the stop never waits for a command session it destroyed, a start stuck
+      on /data included (I2); a level off refused for certain is not kept
+      (m1); a pending stop follows a new address, a confirmed one of the old
+      address is forgotten (m2); stop answers and guide (m3); commands and
+      stops paced on SAVE Connect (m4); tests for M23 and M25 (m5). Tests
+      `r1 …` in `test/app.test.js`.
 - [ ] **Milestone 2 — real unit**: run against a real SAVE unit, through an
       EW11 and through SAVE Connect (see "To check").
 - [ ] **Milestone 3 — more**: accessory sensors (room, CO2, RH on UI1-UI5:
@@ -95,7 +104,7 @@ up to date at the end of every milestone.
 - **The stop (protective)**: 1131 = 0 then 1162 = 2. Never held back (see
   docs). The guard is written to /data before its first byte, waiting 150
   ms at most. Kept with its address: `pending`, `seenOff`, `onReads`,
-  `reasserts` (sends that left, 3 at most; an unreadable count is 0),
+  `reasserts` (sends the unit answered, 3 at most; an unreadable count is 0),
   `sticky`. No date in /data: never lifted by the time.
 - **getConfig() in `connected`**: retried after 5 s, 15 s, 30 s, then every
   minute, without end, with a status; a new `connected` resets it.

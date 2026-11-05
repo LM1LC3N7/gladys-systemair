@@ -174,6 +174,8 @@ export function fakeSystemair({ map = defaultMap(), saveConnect = false } = {}) 
     split: false,
     wrongTransaction: false,
     badEcho: false,
+    /** "fc:register" keys whose write echo is wrong (only those). */
+    badEchoOn: new Set(),
     /** Hosts connected to. */
     hosts: [],
     /** "fc:register" keys whose request closes the connection, unanswered; writes that do so. */
@@ -218,7 +220,7 @@ export function fakeSystemair({ map = defaultMap(), saveConnect = false } = {}) 
             ignoreWrites: unit.ignoreWrites,
             saveConnect: unit.saveConnect,
           });
-          if (write && unit.badEcho && answer[0] === 6) answer[4] ^= 1;
+          if (write && (unit.badEcho || unit.badEchoOn.has(key)) && answer[0] === 6) answer[4] ^= 1;
         }
         const out = Buffer.alloc(7 + answer.length);
         out.writeUInt16BE(unit.wrongTransaction ? (tid + 1) & 0xffff : tid, 0);

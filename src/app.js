@@ -51,8 +51,9 @@
 // with the option, or by the ventilation read running twice in a row after it
 // was seen stopped (started on its panel). While kept, a poll that reads the
 // ventilation running before it was seen stopped (or after a start that may
-// still land) sends it again: three sends that left at most (a send that never
-// left is not counted). A stop that may not have landed when the container
+// still land, within its 90 s) sends it again: three sends the unit answered
+// at most (a closed connection, a timeout or a gateway held by another master
+// is not counted). A level off refused for certain (exception 1-3) is not kept. A stop that may not have landed when the container
 // stopped is sent again at start from /data, before the configuration is read.
 //
 // In-memory times (deadlines, guards, the time of the last read) are on a
@@ -221,7 +222,12 @@ export class SystemairApp {
       stopGuard: this.guardRecord() ?? loaded.stopGuard,
     };
     if (!this.stopGuard && loaded.stopGuard) {
-      this.stopGuard = { ...loaded.stopGuard, sentAt: this.mono(), restored: true };
+      this.stopGuard = {
+        ...loaded.stopGuard,
+        sentAt: this.mono(),
+        stickyUntil: this.mono(),
+        restored: true,
+      };
       this.logger.info('Systemair: a stop kept in /data is still kept');
     }
   }
@@ -280,6 +286,8 @@ export class SystemairApp {
    */
   async boot() {
     await this.loadMemory();
+    // The last configuration kept in /data is the current one until Gladys says otherwise.
+    if (this.memory.target) this.adoptGuard(this.memory.target);
     const guard = this.stopGuard;
     if (guard?.pending) {
       this.logger.warn('Systemair: a stop may not have landed before the restart, sent again');
@@ -322,6 +330,7 @@ export class SystemairApp {
     this.lastStatus = undefined;
     this.publisher.start();
     const target = this.configTarget();
+    if (target) this.adoptGuard(target);
     if (target && JSON.stringify(target) !== JSON.stringify(this.memory.target)) {
       // Where a stop goes before the configuration is read again (after a restart).
       this.memory.target = target;
@@ -363,6 +372,27 @@ export class SystemairApp {
 
   guardTarget(guard) {
     return { unit: guard.unit, host: guard.host, port: guard.port, unitId: guard.unitId };
+  }
+
+  /**
+   * A kept stop of another unit than `target` (the address changed since):
+   * one that may not have landed yet now goes to `target` (the device is the
+   * same; the old address may have been a typo pointing at another Modbus
+   * device, never written again); one already seen applied is forgotten.
+   */
+  adoptGuard(target) {
+    const guard = this.stopGuard;
+    if (!guard || guard.unit === target.unit) return;
+    if (guard.pending) {
+      this.stopGuard = { ...guard, ...target, seenOff: false, onReads: 0 };
+      this.logger.warn(
+        'Systemair: a stop not confirmed for the previous address goes to the new one',
+      );
+    } else {
+      this.stopGuard = undefined;
+      this.logger.info('Systemair: the stop kept for the previous address is forgotten');
+    }
+    if (!this.memoryUnreadable && this.memoryLoaded) this.persistStopGuard().catch(() => {});
   }
 
   /** The kept stop, when it belongs to the unit of the configuration. */
@@ -638,11 +668,13 @@ export class SystemairApp {
   }
 
   /** Ends the session on the line when it is one of `kinds`, and waits for its end. */
-  async takeLine(kinds) {
+  async takeLine(kinds, { protective = false } = {}) {
     const current = this.active;
     if (current && kinds.includes(current.kind)) {
       current.abort('line taken');
-      await current.done;
+      // The abort destroys its socket (or its connection in progress) at once:
+      // the stop never waits for what that session still awaits (a slow /data).
+      if (!protective) await current.done;
     }
   }
 
@@ -701,12 +733,30 @@ export class SystemairApp {
   }
 
   /** Several blocks in `session`, derived together (power, mode choice). */
-  async readBlocks(session, keys, budget) {
+  async readBlocks(session, keys, budget, deadline) {
     const values = {};
-    for (const key of keys) {
-      Object.assign(values, await this.readBlock(session, key, { timeoutMs: budget() }));
+    for (const [index, key] of keys.entries()) {
+      if (index > 0) await this.paceWithin(deadline);
+      Object.assign(
+        values,
+        await this.readBlock(session, key, { timeoutMs: budget(), pace: this.paceFor(deadline) }),
+      );
     }
     return derive(values);
+  }
+
+  /**
+   * The pause of the gateway between two requests of a command or a stop,
+   * when its deadline leaves room for it (else none: the deadline first).
+   */
+  paceFor(deadline) {
+    const { pace } = GATEWAYS[this.config.gateway];
+    return deadline !== undefined && deadline - this.mono() > pace + 500 ? pace : 0;
+  }
+
+  async paceWithin(deadline) {
+    const pace = this.paceFor(deadline);
+    if (pace > 0) await sleep(this.timers, pace);
   }
 
   // --- Polling ---------------------------------------------------------------
@@ -1012,6 +1062,9 @@ export class SystemairApp {
     }
     if (this.inputFc === FC.READ_HOLDING && c.gateway === 'generic') {
       text = join(text, T.fallback);
+    }
+    if (this.stopRefused?.unit === this.unitKey()) {
+      text = join(text, T.stopRefused(this.stopRefused.code));
     }
     const guard = this.ownGuard();
     if (guard) {
@@ -1383,8 +1436,12 @@ export class SystemairApp {
       if (budget < TIMINGS.commandMinRead) {
         throw this.refusal(ERRORS.tooSlow);
       }
+      if (key !== FRESH_BLOCKS[0]) await this.paceWithin(sendBy);
       try {
-        Object.assign(read, await this.readBlock(session, key, { timeoutMs: budget }));
+        Object.assign(
+          read,
+          await this.readBlock(session, key, { timeoutMs: budget, pace: this.paceFor(sendBy) }),
+        );
       } catch (err) {
         if (err.kind === ERROR_KINDS.ABORTED) {
           throw err;
@@ -1454,6 +1511,8 @@ export class SystemairApp {
     const previousGuard = this.stopGuard;
     for (const [index, { reg, value }] of writes.entries()) {
       const first = index === 0;
+      // The pause before each write (the first one too, after the fresh read).
+      await this.paceWithin(first ? sendBy : answerBy);
       const request = writeRequest(reg, value);
       let echo;
       try {
@@ -1509,8 +1568,12 @@ export class SystemairApp {
     if (answerBy - this.mono() < 50) {
       throw new ModbusError(ERROR_KINDS.TIMEOUT, 'no time left to read back', { sent: true });
     }
-    const back = await this.readBlocks(session, BACK_BLOCKS, () =>
-      Math.max(50, answerBy - this.mono()),
+    await this.paceWithin(answerBy);
+    const back = await this.readBlocks(
+      session,
+      BACK_BLOCKS,
+      () => Math.max(50, answerBy - this.mono()),
+      answerBy,
     );
     const got = back[command.read];
     if (got !== plan.expected) {
@@ -1564,15 +1627,19 @@ export class SystemairApp {
   async sendStop(plan, received, target, { reassert = false } = {}) {
     // A command not written yet gives way (checked right before its write).
     this.protectSeq += 1;
+    this.stopRefused = undefined;
     // A start or a mode that may have left before this stop and is not
     // confirmed may still be applied after it: the stop is then sticky (sent
     // again when the ventilation reads running, even after it was seen stopped).
     const previous = this.stopGuard?.unit === target.unit ? this.stopGuard : undefined;
+    // A press decides afresh (never carried from an older stop); a resend keeps
+    // the flag of the stop it repeats while its window lasts.
+    const carried = reassert && previous?.sticky && this.mono() < (previous.stickyUntil ?? 0);
     const sticky =
       this.startOpen ||
       (this.guardActive('power') && this.guards.get('power').expected === true) ||
       this.guardActive('modeChoice') ||
-      Boolean(previous?.sticky);
+      Boolean(carried);
     // Kept before the first byte; /data is given a short moment, never awaited longer.
     this.stopGuard = {
       ...target,
@@ -1584,6 +1651,8 @@ export class SystemairApp {
       // adds one only once its bytes leave).
       reasserts: reassert ? (previous?.reasserts ?? 0) : 0,
       sticky,
+      // A start or mode not confirmed can land within its guard (90 s) at most.
+      stickyUntil: carried ? previous.stickyUntil : this.mono() + TIMINGS.guard,
     };
     const saved = this.persistStopGuard().catch(() => {});
     let saveTimer;
@@ -1597,9 +1666,22 @@ export class SystemairApp {
     const guard = this.stopGuard;
     const state = { written: false, sentAt: undefined, counted: false };
     const retryUntil = received + TIMINGS.commandSendBy;
+    // Only a resend the unit answered (the echo of its first write, or a Modbus
+    // exception) counts as one of the three: a connection closed, a timeout or a
+    // wrong answer never does (another master may hold the gateway).
+    const count = () => {
+      if (reassert && !state.counted && this.stopGuard === guard) {
+        state.counted = true;
+        guard.reasserts += 1;
+        this.persistStopGuard().catch(() => {});
+      }
+    };
     const attempt = (session) =>
       (async () => {
-        for (const { reg, value } of plan.command.writes()) {
+        for (const [index, { reg, value }] of plan.command.writes().entries()) {
+          if (index > 0) {
+            await this.paceWithin(retryUntil);
+          }
           const request = writeRequest(reg, value);
           let echo;
           try {
@@ -1612,17 +1694,13 @@ export class SystemairApp {
                 if (state.written) return;
                 state.written = true;
                 state.sentAt = this.mono();
-                if (reassert && !state.counted && this.stopGuard === guard) {
-                  // Only a send that left counts as one of the three resends.
-                  state.counted = true;
-                  guard.reasserts += 1;
-                  this.persistStopGuard().catch(() => {});
-                }
               },
             });
           } catch (err) {
             if (err instanceof ModbusError && err.kind === ERROR_KINDS.REFUSED) {
               err.register = reg;
+              state.answered = true;
+              if (index === 0) count();
             }
             throw err;
           }
@@ -1632,14 +1710,17 @@ export class SystemairApp {
               sent: true,
             });
           }
+          state.answered = true;
+          if (index === 0) count();
         }
-        return this.readBlocks(session, BACK_BLOCKS, () => TIMINGS.requestTimeout);
+        await this.paceWithin(retryUntil);
+        return this.readBlocks(session, BACK_BLOCKS, () => TIMINGS.requestTimeout, retryUntil);
       })();
     const AGAIN = [ERROR_KINDS.CLOSED, ERROR_KINDS.TIMEOUT, ERROR_KINDS.PROTOCOL];
     this.reserved += 1;
     const sending = (async () => {
       try {
-        await this.takeLine(['read', 'command', 'protect']);
+        await this.takeLine(['read', 'command', 'protect'], { protective: true });
         for (;;) {
           try {
             return await this.useLine('protect', TIMINGS.connectTimeout, attempt, {
@@ -1683,6 +1764,7 @@ export class SystemairApp {
         this.persistStopGuard().catch(() => {});
       }
       this.guards.delete('power');
+      this.closeStart();
       if (sticky) {
         this.followUp();
       }
@@ -1703,14 +1785,15 @@ export class SystemairApp {
             this.persistStopGuard().catch(() => {});
           }
         })
-        .catch((err) =>
-          this.logger.warn(`Systemair: stop failed after the ack (${errorReason(err)})`),
-        );
+        .catch((err) => {
+          if (this.refusedLevel(err)) this.stopRefusedByUnit(guard, err);
+          this.logger.warn(`Systemair: stop failed after the ack (${errorReason(err)})`);
+        });
       if (!state.written) {
         throw this.refusal(ERRORS.stopPending);
       }
       throw this.refusal(
-        ERRORS.sentUnconfirmed(
+        ERRORS.stopUnconfirmed(
           word(both('no answer yet', 'pas encore de réponse'), this.config.language),
         ),
       );
@@ -1721,26 +1804,51 @@ export class SystemairApp {
       if (!state.written) {
         throw this.refusal(ERRORS.stopNotSent(reason));
       }
+      if (this.refusedLevel(outcome.err)) {
+        this.stopRefusedByUnit(guard, outcome.err);
+        throw this.refusal(outcome.err.code === 3 ? ERRORS.stopNotAllowed : ERRORS.refused(reason));
+      }
       if (
         outcome.err.kind === ERROR_KINDS.REFUSED &&
         NOT_APPLIED_EXCEPTIONS.has(outcome.err.code)
       ) {
-        throw this.refusal(
-          outcome.err.register === REG.MANUAL_LEVEL && outcome.err.code === 3
-            ? ERRORS.stopNotAllowed
-            : ERRORS.refused(reason),
-        );
+        throw this.refusal(ERRORS.stopModeRefused(reason));
       }
-      throw this.refusal(ERRORS.sentUnconfirmed(reason));
+      throw this.refusal(
+        state.answered ? ERRORS.stopUnconfirmed(reason) : ERRORS.stopNoAnswer(reason),
+      );
     }
     if (outcome.back !== undefined && ownUnit) {
       this.noteValues(outcome.back);
     }
     throw this.refusal(
-      ERRORS.sentUnconfirmed(
+      ERRORS.stopUnconfirmed(
         word(both('still running', 'toujours en marche'), this.config.language),
       ),
     );
+  }
+
+  /** A refusal of the level off (exception 1-3 on 1131): certain, nothing applied. */
+  refusedLevel(err) {
+    return (
+      err?.kind === ERROR_KINDS.REFUSED &&
+      NOT_APPLIED_EXCEPTIONS.has(err.code) &&
+      err.register === REG.MANUAL_LEVEL
+    );
+  }
+
+  /**
+   * The unit refused the level off for certain (manual stop not allowed): the
+   * stop is neither pending nor resent, and never blocks the mode; the status
+   * says so until a stop is pressed again.
+   */
+  stopRefusedByUnit(guard, err) {
+    this.stopRefused = { unit: guard.unit, code: err.code };
+    if (this.stopGuard === guard) {
+      this.stopGuard = undefined;
+      this.persistStopGuard().catch(() => {});
+    }
+    this.logger.warn(`Systemair: the unit refused the stop (exception ${err.code}); not kept`);
   }
 
   /** The kept stop ends (a start pressed, or the unit started elsewhere). */
@@ -1753,10 +1861,18 @@ export class SystemairApp {
 
   // --- Guards --------------------------------------------------------------------
 
+  /** No command guard left: no start or mode may still land (a stop is no longer sticky for it). */
+  closeStart() {
+    if (!this.guards.has('power') && !this.guards.has('modeChoice') && !this.inFlight) {
+      this.startOpen = false;
+    }
+  }
+
   guardActive(key) {
     const guard = this.guards.get(key);
     if (guard && this.mono() >= guard.until) {
       this.guards.delete(key);
+      this.closeStart();
       return false;
     }
     return Boolean(guard);
@@ -1782,6 +1898,7 @@ export class SystemairApp {
       }
       if (guard.moved && values[key] === guard.expected) {
         this.guards.delete(key);
+        this.closeStart();
       }
     }
     const stop = this.ownGuard();
@@ -1793,6 +1910,11 @@ export class SystemairApp {
       return;
     }
     if (values.power === false) {
+      if (stop.sticky && this.mono() >= stop.stickyUntil) {
+        // Seen applied after the window of the start that could land: no longer sticky.
+        stop.sticky = false;
+        this.persistStopGuard().catch(() => {});
+      }
       if (!stop.seenOff || stop.onReads !== 0 || stop.pending) {
         stop.seenOff = true;
         stop.pending = false;
@@ -1822,7 +1944,7 @@ export class SystemairApp {
     if (this.protecting || this.reassertTimer || stop.reasserts >= TIMINGS.stopReasserts) {
       return;
     }
-    // Counted only when its bytes leave (sendStop): a send that never left is never a try.
+    // Counted only when the unit answers its first write (sendStop): anything else is never a try.
     this.logger.warn('Systemair: the ventilation still runs after a stop, stop sent again');
     // Not awaited, and a second after the read closed the line.
     const generation = this.generation;

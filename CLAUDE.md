@@ -72,7 +72,8 @@ scripts/cover.mjs         cover.png generator
   manual mode; a refused level never sends the mode. The kept stop is never
   lifted by the time: only by a start pressed with the option or by the
   ventilation read running twice in a row after it was seen stopped. Only a
-  send that left counts as one of its three resends.
+  send the unit answered (echo or exception) counts as one of its three
+  resends; a level off refused for certain is not kept.
 - Only registers 1131 (0, 2, 3, 4) and 1162 (1 to 7) are ever written
   (`ALLOWED_WRITES`, checked in `writeRequest`).
 - Never read sooner than the interval (button, scan, reconnection, restart).

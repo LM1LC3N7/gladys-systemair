@@ -68,7 +68,8 @@ The unit is read every 60 s (30 s to 1 h), in about twelve small requests
 over one connection, with a pause between them (the touch panel shares the
 bus), closed after. The test button, a Discovery scan, a reconnection of
 Gladys or a restart of the integration never read it sooner than the
-interval. Reads outside the interval:
+interval. Commands and stops use the same pause between their requests when
+their deadline leaves room for it. Reads outside the interval:
 
 - every command reads the unit right before writing, then reads the mode
   and the level back;
@@ -125,25 +126,42 @@ valid one kept in /data). It is tried again for 3.5 s after the press.
 It can fail in these cases only, and the answer says so:
 
 - no address known (never a valid one configured): "not sent";
-- the unit cannot be reached within 3.5 s: "not sent" (or "not sent yet"
-  while it still tries); the stop is kept and sent again by the next reads;
-- the unit refuses the level off (exception 3: "Allow manual fan stop" is off
-  on the unit): "refused", and the manual mode is not sent;
-- another Modbus exception 1, 2 or 3: "refused";
-- no answer, a wrong echo, or the ventilation read back running: "sent,
-  without confirmation".
+- the gateway cannot be reached within 3.5 s: "stop not sent" (or "not sent
+  yet" while it still tries); the stop is kept and sent again by the next
+  reads;
+- the connection closes, or no answer comes, before the unit answers: "stop
+  handed to the gateway, no answer from the unit" (it may not have
+  arrived); kept and sent again;
+- the unit refuses the level off with a Modbus exception 1, 2 or 3 (3:
+  "Allow manual fan stop" is off on the unit): "refused"; the manual mode is
+  not sent, and the stop is **not kept** (neither pending nor sent again,
+  the mode is not blocked; the status says so until the next press);
+- the level off applied and the manual mode refused (exception 1, 2 or 3):
+  said so; kept and sent again;
+- any other Modbus exception (4 to 6…), a wrong echo, or the ventilation read
+  back running: "stop sent, without confirmation"; kept and sent again.
 
 The stop is then **kept** (in /data, with the address): it is never lifted
 by the time, only by "Start the ventilation" pressed (with the option), or
 when the ventilation is read running **twice in a row** after it was seen
 stopped (started from its panel). While it is kept, a read that finds the
-ventilation running before it was seen stopped (or after a start that could
-still land) sends the stop again: three sends at most, counting only the
-sends that left (a resend that could not reach the unit is not counted).
+ventilation running before it was seen stopped sends the stop again: three
+sends at most, counting only the sends **the unit answered** (the echo of
+the level off, or a Modbus exception); a resend that found the gateway taken
+by another master, a closed connection or no answer is not counted.
+
+A stop pressed while a start or a mode may still land (written, not
+confirmed, within its 90 s) is "sticky": it is sent again even after the
+ventilation was seen stopped, until a read after those 90 s sees it
+applied. A new press never inherits that from an older stop, and a start
+made later on the panel is never fought.
+
 The status says where the stop is: not confirmed yet, kept, or given up
-after three sends. A stop that may not have landed when the integration
-stopped is sent again when it restarts, even before the configuration is
-read again.
+after three answered sends. A stop that may not have landed when the
+integration stopped is sent again when it restarts, even before the
+configuration is read again. When the address was changed since, it goes to
+the new address (never written again to the old one); a stop already seen
+applied at the old address is forgotten.
 
 ## Identity of the unit
 

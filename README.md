@@ -51,8 +51,8 @@ Gladys ⇄ SDK ⇄ src/handlers.js ⇄ src/app.js (SystemairApp)
   written yet, retried for 3.5 s, goes to the address kept in `/data` when
   the configuration is not read yet. Then **kept** in `/data`: never lifted
   by the time, only by "Start the ventilation" or by the ventilation read
-  running twice in a row after it was seen stopped; resent (three sends that
-  left at most) when the ventilation reads running before it was seen
+  running twice in a row after it was seen stopped; resent (three sends the
+  unit answered at most) when the ventilation reads running before it was seen
   stopped; sent again at container start, before the configuration, when it
   may not have landed.
 - **Not done**: settings, setpoints, schedules, clock, alarm and filter

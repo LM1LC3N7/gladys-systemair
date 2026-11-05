@@ -5,7 +5,7 @@
 // interval; the light identity learnt for the unit (a fingerprint of its fan
 // level settings); the address of the last configuration; a kept stop (the
 // address it was sent to, whether it may not have landed yet, whether the
-// unit was seen off since, the resends that left). No secret (the Modbus
+// unit was seen off since, the resends the unit answered). No secret (the Modbus
 // interface has none), no personal data. The file is readable by the
 // container user only (0600), bounded and repaired when read back.
 //
