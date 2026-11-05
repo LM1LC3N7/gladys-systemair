@@ -1,6 +1,6 @@
 {
   "name": "gladys-systemair",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Gladys Assistant external integration for Systemair SAVE ventilation units (VTR, VSR, VSC) over local Modbus TCP: mode, temperatures, humidity, fan outputs, filter, alarms; optional mode and start commands, stop never held back. Unofficial, not affiliated with Systemair.",
   "type": "module",

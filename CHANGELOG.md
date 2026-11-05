@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-05
+
 ### Added
 
 - Systemair SAVE heat recovery ventilation (VTR, VSR, VSC) over local Modbus
@@ -23,3 +25,6 @@ the notes of the version's GitHub Release.
   the option, is kept until a start, and is sent again after a restart when
   it may not have landed (the guide lists when it can fail).
 - "Test the connection" button, docs in English and French, cover image.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-systemair/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-systemair/releases/tag/v0.1.1
